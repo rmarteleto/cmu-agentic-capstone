@@ -31,6 +31,7 @@ sig-agent/
 │   │   ├── setup.py           #     registers sig_* tools on a FastMCP server
 │   │   ├── service.py         #     bridge to the orchestration engine
 │   │   ├── rest_api.py        #     FastAPI adapter (Copilot Studio connector)
+│   │   ├── openai_compat.py   #     OpenAI-compatible /v1 shim for Open-WebUI
 │   │   ├── types.py           #     tool I/O contract
 │   │   └── utils.py           #     serialization + auth helpers
 │   ├── orchestration/         #   Orchestrator + interpreter/critic/synth/retriever
