@@ -1,0 +1,45 @@
+# Open-WebUI chat front-end wired to the SIG agent's OpenAI-compatible shim.
+#
+#   cd sig_agent
+#   cp .env.example .env          # set OPENAI_API_KEY / SHAREPOINT_* / SIG_API_KEY
+#   docker compose -f deploy/docker-compose.openwebui.yml up --build
+#
+# Then open http://localhost:3000, create the first account, and the model
+# "sig-agent" is already selectable — every prompt runs the full SOP-grounded
+# multi-agent pipeline and returns a cited answer with a review flag.
+services:
+  sig-agent:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    env_file: ../.env
+    # REST + OpenAI-compatible shim (rest_api mounts /v1/*). Port 8080 per Dockerfile.
+    expose:
+      - "8080"
+    ports:
+      - "8080:8080"
+    volumes:
+      # Persist the Chroma index across restarts (CHROMA_PERSIST_DIR=./data/chroma).
+      - ../data:/app/data
+    restart: unless-stopped
+
+  open-webui:
+    image: ghcr.io/open-webui/open-webui:main
+    depends_on:
+      - sig-agent
+    ports:
+      - "3000:8080"
+    environment:
+      # Point Open-WebUI at the SIG agent as its only "OpenAI" backend.
+      - OPENAI_API_BASE_URL=http://sig-agent:8080/v1
+      - OPENAI_API_KEY=${SIG_API_KEY:-sk-sig-local}
+      # The agent IS the model; disable Ollama discovery.
+      - ENABLE_OLLAMA_API=false
+      # Optional: skip the per-message title/tag LLM calls (no real chat model here).
+      - ENABLE_TITLE_GENERATION=false
+    volumes:
+      - open-webui-data:/app/backend/data
+    restart: unless-stopped
+
+volumes:
+  open-webui-data:

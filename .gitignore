@@ -1,0 +1,82 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.egg
+*.egg-info/
+dist/
+build/
+.eggs/
+wheels/
+*.whl
+MANIFEST
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+.env
+.env.*
+!.env.example
+
+# uv
+.uv/
+uv.lock
+
+# Testing
+.pytest_cache/
+.coverage
+coverage.xml
+htmlcov/
+*.lcov
+junit*.xml
+
+# Type checking / linting
+.mypy_cache/
+.ruff_cache/
+
+# ChromaDB / vector store
+data/chroma/
+data/*.db
+data/*.sqlite3
+
+# Jupyter
+.ipynb_checkpoints/
+*.ipynb
+
+# IDE / editors
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Project-specific
+.trash/
+data/output/
+data/sig.txt
+*.xlsx.bak
+
+# Secrets (belt + suspenders — .env rule above covers most)
+*.pem
+*.key
+secrets.*
+
+# Docker
+.dockerignore
+
+# Distribution / build artifacts
+site/
+sops/
+sop.csv
+sop.txt
+claude.md
+.claude-plugin/
+deploy_copilot_studio.md
