@@ -120,6 +120,5 @@ docker compose -f deploy/docker-compose.openwebui.yml up --build
 
 Point any OpenAI client at `http://localhost:8080/v1` with model `sig-agent`.
 Interaction surfaces overall: **chat UI** (Open-WebUI), **CLI** (`main.py`),
-**MCP** (Claude Code plugin), **REST** (`/answer`, `/answer-batch`), and the
-**Copilot Studio** custom connector.
+**MCP** (Claude Code plugin), **REST** (`/answer`, `/answer-batch`).
 

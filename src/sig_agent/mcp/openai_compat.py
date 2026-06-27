@@ -74,8 +74,8 @@ def _render_answer(ans: FinalAnswer) -> str:
         for c in ans.citations:
             eff = c.effective_date.isoformat() if c.effective_date else "n/a"
             cite = f"- {c.document_id} {c.section} (v{c.version or 'n/a'}, {eff})".rstrip()
-            if c.sharepoint_url:
-                cite += f" — {c.sharepoint_url}"
+            if c.source_url:
+                cite += f" — {c.source_url}"
             lines.append(cite)
     return "\n".join(lines).strip()
 

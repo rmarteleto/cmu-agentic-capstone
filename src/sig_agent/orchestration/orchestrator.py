@@ -60,9 +60,17 @@ class Orchestrator:
         state = SharedState(question)
         if not verdict.accepted:
             state.log(f"input rejected: {verdict.reason}")
-            return self.synthesizer.synthesize(
-                question, branch=None, matched_candidate=None, escalated=True,
-                escalation_note=f"Input rejected by guardrail: {verdict.reason}.")
+            return FinalAnswer(
+                question=question,
+                answer=(
+                    "I can only answer questions about security controls, policies, "
+                    "procedures, and compliance requirements (SOPs / SIG questionnaires). "
+                    "Please rephrase your question in that context."
+                ),
+                status=AnswerStatus.ESCALATED,
+                needs_human_review=False,
+                notes=f"Guardrail rejection: {verdict.reason}",
+            )
 
         # 1. Retrieve (one-way handoff downstream).
         result = self.retriever.fetch(question)

@@ -68,6 +68,11 @@ class Settings:
     keyword_weight: float = _float("KEYWORD_WEIGHT", 0.4)
     enable_reranker: bool = _bool("ENABLE_RERANKER", True)   # cross-encoder rerank
 
+    # Conflict-detection sensitivity for beam branch comparison.
+    # Answers with SequenceMatcher ratio >= this value are treated as
+    # complementary (same policy, different phrasing) rather than conflicting.
+    answer_similarity_threshold: float = _float("ANSWER_SIMILARITY_THRESHOLD", 0.55)
+
     # M6 input guardrails
     enable_input_guard: bool = _bool("ENABLE_INPUT_GUARD", True)
     min_question_chars: int = _int("MIN_QUESTION_CHARS", 8)

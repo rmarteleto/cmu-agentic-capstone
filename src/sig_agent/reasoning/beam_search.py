@@ -17,7 +17,9 @@ controller is framework-agnostic and unit-testable with stubs.
 """
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 from datetime import date
+from difflib import SequenceMatcher
 from typing import Callable, Optional
 
 from ..config import settings
@@ -33,13 +35,10 @@ CritiqueFn = Callable[[str, ReasoningNode], tuple]
 
 
 class EarlyEscalation(Exception):
-    """Raised mid-search when surviving branches carry conflicting citations
-    that the deterministic precedence rules cannot resolve.
-
-    Addresses the M4 review note: a citation conflict can surface before the
-    final synthesis node (e.g. at depth 2, Reconciliation & Scope), so the
-    human-escalation gate must be able to trigger early rather than letting the
-    controller silently pick the higher-scored of two conflicting branches.
+    """Raised mid-search for truly unrecoverable conditions (e.g. empty corpus
+    after all branches are pruned).  Citation conflicts between branches are now
+    handled by merging citations and annotating the winning branch's thought
+    rather than raising this exception — see _check_branch_conflicts.
     """
 
     def __init__(self, note: str, depth: int):
@@ -62,13 +61,16 @@ class BeamSearchController:
 
     def run(self, question: str, passages: list[Passage],
             candidates: list[Candidate], state: SharedState) -> Optional[Branch]:
-        # Seed depth-1 nodes from the top-B SOP passages that survive the
-        # cheap deterministic pre-filter.
-        frontier: list[Branch] = []
-        for passage in passages[: settings.branch_factor]:
-            if not self.heuristic_prefilter(passage, candidates):
-                state.log(f"prefilter pruned passage {passage.passage_id}")
-                continue
+        B = settings.branch_factor
+        # Parallel workers = B (depth-1) or W*B (depth 2+), capped at max_workers.
+        workers = min(B * max(self.W, 1), settings.max_workers)
+
+        # Depth 1 — fan out over the top-B passages in parallel.
+        d1_passages = [p for p in passages[:B]
+                       if self.heuristic_prefilter(p, candidates)
+                       or state.log(f"prefilter pruned passage {p.passage_id}") or False]
+
+        def _expand_d1(passage: Passage) -> Optional[Branch]:
             node = self.generate(question, passage, None)
             node.depth = 1
             state.register_node(node)
@@ -76,36 +78,44 @@ class BeamSearchController:
             node.critic_score, node.scope_score = score, scope
             if scope < self.min_score:
                 state.log(f"pruned node {node.node_id} scope={scope} < {self.min_score}")
-                continue
-            frontier.append(Branch(nodes=[node]))
+                return None
+            return Branch(nodes=[node])
+
+        with ThreadPoolExecutor(max_workers=workers) as ex:
+            frontier = [b for b in ex.map(_expand_d1, d1_passages) if b is not None]
 
         if not frontier:
             return None
         frontier = self._beam(frontier)
         self._check_branch_conflicts(frontier, state, depth=1)
 
-        # Expand depth 2..D.
+        # Depths 2..D — fan out over every (branch, passage) pair in parallel.
         for depth in range(2, self.D + 1):
-            expanded: list[Branch] = []
-            for branch in frontier:
-                for passage in passages[: settings.branch_factor]:
-                    child = self.generate(question, passage, branch.leaf)
-                    child.depth = depth
-                    child.parent_id = branch.leaf.node_id
-                    state.register_node(child)
-                    score, scope = self.critique(question, child)
-                    child.critic_score, child.scope_score = score, scope
-                    if scope < self.min_score:
-                        state.log(f"pruned node {child.node_id} at d{depth}")
-                        continue
-                    new_branch = Branch(nodes=branch.nodes + [child])
-                    state.register_branch(new_branch)
-                    expanded.append(new_branch)
+            pairs = [(branch, passage)
+                     for branch in frontier
+                     for passage in passages[:B]]
+
+            def _expand_pair(args: tuple, _depth: int = depth) -> Optional[Branch]:
+                branch, passage = args
+                child = self.generate(question, passage, branch.leaf)
+                child.depth = _depth
+                child.parent_id = branch.leaf.node_id
+                state.register_node(child)
+                score, scope = self.critique(question, child)
+                child.critic_score, child.scope_score = score, scope
+                if scope < self.min_score:
+                    state.log(f"pruned node {child.node_id} at d{_depth}")
+                    return None
+                new_branch = Branch(nodes=branch.nodes + [child])
+                state.register_branch(new_branch)
+                return new_branch
+
+            with ThreadPoolExecutor(max_workers=workers) as ex:
+                expanded = [b for b in ex.map(_expand_pair, pairs) if b is not None]
+
             if not expanded:
                 break
             frontier = self._beam(expanded)
-            # Check for unresolvable citation conflicts as soon as the beam is
-            # formed at this depth — before proceeding toward final synthesis.
             self._check_branch_conflicts(frontier, state, depth=depth)
 
         return max(frontier, key=lambda b: b.cumulative_score) if frontier else None
@@ -116,36 +126,96 @@ class BeamSearchController:
 
     def _check_branch_conflicts(self, branches: list[Branch],
                                 state: SharedState, depth: int) -> None:
-        """Escalate early if surviving branches disagree on an unresolvable basis.
+        """Detect and handle citation conflicts at each beam depth.
 
-        A conflict requires BOTH (a) branches that reach materially different
-        draft answers, and (b) at least two distinct cited SOP documents. Merely
-        citing different but complementary passages is not a conflict. When such
-        a disagreement exists, the deterministic precedence engine is asked to
-        rank the competing citations; if it returns ESCALATE (an unbreakable
-        tie), we stop and route to the human gate immediately.
+        Two tiers:
+        1. **Similar answers** (SequenceMatcher ratio >= threshold): branches
+           are complementary — same policy, different phrasing. Merge all
+           citations into the best-scoring branch and continue without
+           escalating.
+        2. **Different answers** from ≥2 distinct SOP docs: apply deterministic
+           precedence. If precedence resolves the tie, continue normally. If
+           unresolvable, merge all citations into the best branch and annotate
+           its thought with a multi-source note so the Synthesizer can present
+           each perspective with its citation rather than abstaining.
+
+        EarlyEscalation is no longer raised here; the "unresolvable conflict"
+        path now produces a richer answer instead of a blank.
         """
         if len(branches) < 2:
             return
-        distinct_answers = {
-            (b.leaf.draft_answer or "").strip().lower()
-            for b in branches if (b.leaf.draft_answer or "").strip()
-        }
+
+        labeled = [
+            (b, (b.leaf.draft_answer or "").strip().lower())
+            for b in branches
+            if (b.leaf.draft_answer or "").strip()
+        ]
+        if len(labeled) < 2:
+            return
+
         passages_by_doc: dict[str, Passage] = {}
         for b in branches:
             for prov in b.leaf.citations:
                 passages_by_doc.setdefault(
                     prov.document_id, Passage(text="", provenance=prov))
-        if len(distinct_answers) < 2 or len(passages_by_doc) < 2:
-            return  # branches agree, or share a single source — no conflict
+
+        # Pairwise similarity across all surviving draft answers.
+        answers = [a for _, a in labeled]
+        max_sim = max(
+            SequenceMatcher(None, a1, a2).ratio()
+            for i, a1 in enumerate(answers)
+            for a2 in answers[i + 1:]
+        )
+
+        def _merge_citations(target: Branch, sources: list[Branch]) -> None:
+            seen: set[tuple[str, str]] = {
+                (p.document_id, p.section) for p in target.leaf.citations
+            }
+            for src in sources:
+                for prov in src.leaf.citations:
+                    key = (prov.document_id, prov.section)
+                    if key not in seen:
+                        seen.add(key)
+                        target.leaf.citations.append(prov)
+
+        threshold = settings.answer_similarity_threshold
+        if max_sim >= threshold:
+            # Complementary passages — keep best branch, absorb all citations.
+            best = max(branches, key=lambda b: b.cumulative_score)
+            others = [b for b in branches if b is not best]
+            _merge_citations(best, others)
+            state.log(
+                f"branch answers complementary (similarity={max_sim:.2f} >= "
+                f"{threshold}) @ d{depth}: merged {len(passages_by_doc)} "
+                f"citation sources into best branch"
+            )
+            return
+
+        # Answers are materially different — only a real conflict if ≥2 docs.
+        if len(passages_by_doc) < 2:
+            return
 
         result = resolve_precedence(list(passages_by_doc.values()))
         if result.outcome == PrecedenceOutcome.ESCALATE:
-            note = (f"Conflicting citations across reasoning branches at depth "
-                    f"{depth} ({self.DEPTH_LABELS.get(depth, '')}): {result.rationale}. "
-                    f"Sources: {sorted(passages_by_doc)}.")
-            state.log(f"EARLY ESCALATION @ d{depth}: {note}")
-            raise EarlyEscalation(note, depth)
+            # Unresolvable by rules: keep best branch, merge all citations, and
+            # annotate the thought so the Synthesizer presents every perspective
+            # with its source rather than issuing a blank "no match".
+            best = max(branches, key=lambda b: b.cumulative_score)
+            others = [b for b in branches if b is not best]
+            _merge_citations(best, others)
+            source_ids = sorted(passages_by_doc)
+            best.leaf.thought = (
+                f"[Multiple sources with differing context — present each "
+                f"perspective with its citation: {', '.join(source_ids)}] "
+                + best.leaf.thought
+            )
+            state.log(
+                f"citation conflict @ d{depth}: unresolvable by precedence — "
+                f"merged citations from {source_ids} into best branch for "
+                f"multi-source synthesis"
+            )
+            return
+
         state.log(f"branch citation conflict @ d{depth} resolved: {result.rationale}")
 
 

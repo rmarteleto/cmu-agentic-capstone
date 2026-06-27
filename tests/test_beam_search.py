@@ -75,7 +75,12 @@ from sig_agent.reasoning.beam_search import EarlyEscalation
 
 
 def _conflicting_controller():
-    """Two passages tie on every precedence rule but yield different answers."""
+    """Two passages tie on every precedence rule but yield materially different answers.
+
+    Answers are chosen to be semantically dissimilar (SequenceMatcher ratio well
+    below the 0.55 threshold) so the controller takes the 'different context' path
+    rather than the 'complementary passages' path.
+    """
     passages = [
         Passage(text="p", score=1.0, provenance=Provenance(
             source="SOP", document_id="SOP-A", effective_date=_date(2025, 1, 1),
@@ -85,12 +90,16 @@ def _conflicting_controller():
             scope="system", authority_rank=2)),
     ]
 
+    _ANSWERS = {
+        "SOP-A": "Yes, AES-256 encryption is enforced at rest for all customer data per IS-001.",
+        "SOP-B": "No dedicated encryption control exists; data protection relies on network isolation only.",
+    }
+
     def generate(question, passage, parent):
         depth = (parent.depth + 1) if parent else 1
         doc = passage.provenance.document_id
-        # Different sources produce materially different draft answers.
         return ReasoningNode(depth=depth, thought=f"map {doc}",
-                             draft_answer=f"answer-from-{doc}",
+                             draft_answer=_ANSWERS[doc],
                              citations=[passage.provenance],
                              parent_id=parent.node_id if parent else None)
 
@@ -100,13 +109,24 @@ def _conflicting_controller():
     return BeamSearchController(generate=generate, critique=critique), passages
 
 
-def test_conflicting_citations_escalate_early():
+def test_conflicting_citations_merge_instead_of_escalate():
+    """Unresolvable citation conflicts now merge citations + annotate thought.
+
+    Previously raised EarlyEscalation; M6 behavior returns the best branch
+    with all citations merged so the Synthesizer can present each perspective.
+    """
     ctrl, passages = _conflicting_controller()
     state = SharedState("q")
-    with pytest.raises(EarlyEscalation) as exc:
-        ctrl.run("q", passages, [], state)
-    assert exc.value.depth == 1            # fires as soon as the beam forms
-    assert any("EARLY ESCALATION" in e for e in state.event_log)
+    best = ctrl.run("q", passages, [], state)   # must NOT raise
+    assert best is not None
+    # Both SOP-A and SOP-B citations must appear in the winning branch.
+    cited_docs = {p.document_id for p in best.leaf.citations}
+    assert "SOP-A" in cited_docs
+    assert "SOP-B" in cited_docs
+    # Thought must carry the multi-source annotation for the Synthesizer.
+    assert "Multiple sources" in best.leaf.thought
+    # Event log records the merge decision, not an escalation.
+    assert any("multi-source synthesis" in e for e in state.event_log)
 
 
 def test_same_answer_different_sources_does_not_escalate():

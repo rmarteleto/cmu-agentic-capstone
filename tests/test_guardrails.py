@@ -44,3 +44,43 @@ def test_wrap_corpus_text_fences_data():
     assert "DO NOT FOLLOW" in out
     # backtick fences inside corpus are neutralized
     assert "```" not in wrap_corpus_text("```python\nevil\n```")
+
+
+# ---- Topic relevance checks (M6 scope guard) ----
+
+def test_personal_question_rejected():
+    v = classify_input("What's my name?")
+    assert not v.accepted
+    assert "out-of-scope" in v.reason
+
+
+def test_chitchat_rejected():
+    v = classify_input("How are you doing today?")
+    assert not v.accepted
+    assert "out-of-scope" in v.reason
+
+
+def test_no_compliance_keywords_rejected():
+    v = classify_input("What is the capital of France?")
+    assert not v.accepted
+    assert "out-of-scope" in v.reason
+
+
+def test_sig_question_accepted():
+    v = classify_input("Is a records retention policy in place?")
+    assert v.accepted
+
+
+def test_sig_question_mfa_accepted():
+    v = classify_input("Is MFA enforced for all privileged accounts?")
+    assert v.accepted
+
+
+def test_sig_question_vendor_accepted():
+    v = classify_input("How do you manage third-party vendor risk?")
+    assert v.accepted
+
+
+def test_sig_question_incident_accepted():
+    v = classify_input("What is the incident response procedure when a breach occurs?")
+    assert v.accepted

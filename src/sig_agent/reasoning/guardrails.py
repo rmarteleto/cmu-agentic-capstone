@@ -38,6 +38,45 @@ class InputVerdict:
         return self.decision == InputDecision.ACCEPT
 
 
+# Clearly off-topic questions — personal identity, chitchat, general knowledge.
+# Short-circuit before the compliance-keyword check.
+_OFF_TOPIC_PATTERNS = [
+    re.compile(p, re.IGNORECASE)
+    for p in (
+        r"\bwhat(?:'s| is) (?:my|your) name\b",
+        r"\bwho am i\b",
+        r"\bhow are you\b",
+        r"\bhow old am i\b",
+        r"\bwhat(?:'s| is) (?:the )?(?:time|date|weather|temperature)\b",
+        r"\btell (?:me )?(?:a )?joke\b",
+        r"\bwhat(?:'s| is) (?:the )?capital of\b",
+        r"\bwho (?:invented|discovered|created|wrote|sang|played)\b",
+        r"\b(?:what|who|where|when|why|how)\b.*\b(?:movie|song|recipe|sport|team|score|stock|price|recipe)\b",
+    )
+]
+
+# At least one of these must appear for a question to qualify as SIG/SOP topic.
+_COMPLIANCE_RE = re.compile(
+    r"\b(?:"
+    r"polic(?:y|ies)|procedure|control|compliance|compliant|requirement|standard|framework"
+    r"|audit|assessment|documented|documentation"
+    r"|securit(?:y|ies)|encrypt(?:ion|ed|ing)?|ssl|tls|vpn|firewall|network|endpoint"
+    r"|malware|antivirus|patch(?:ing)?|vulnerabilit(?:y|ies)|penetration|pentest|threat|risk"
+    r"|soc2?|iso|gdpr|hipaa|pci|nist|cmmc"
+    r"|data|records?|retention|backup|restore|recover(?:y)?|archive|storage"
+    r"|classif(?:y|ication)|sensitive|confidential|pii|phi"
+    r"|access|auth(?:entication|orization)?|password|credential|mfa|multi.factor|sso"
+    r"|privileged|role|permission|identity|iam"
+    r"|incident|breach|monitor(?:ing)?|logging|alert|siem"
+    r"|continuit(?:y|ies)|disaster|bcp|drp|rpo|rto|availabilit(?:y)?"
+    r"|vendor|third.party|subprocessor|supplier|contractor|outsourc(?:e|ing)?"
+    r"|training|awareness|phishing|onboarding"
+    r"|physical|datacenter|data\s+center|colocation"
+    r"|questionnaire|sop|attestation|certif(?:ication|ied|y)?"
+    r")\b",
+    re.IGNORECASE,
+)
+
 # Prompt-injection / instruction-override patterns. Matched against incoming
 # questions AND surfaced (not executed) when found inside corpus text.
 _INJECTION_PATTERNS = [
@@ -87,6 +126,17 @@ def classify_input(question: str) -> InputVerdict:
         if pat.search(norm):
             return InputVerdict(InputDecision.REJECT, norm,
                                 "prompt-injection / instruction-override detected")
+
+    # Topic relevance: explicit off-topic patterns take priority.
+    for pat in _OFF_TOPIC_PATTERNS:
+        if pat.search(norm):
+            return InputVerdict(InputDecision.REJECT, norm,
+                                "out-of-scope: question is not related to SIG/SOP compliance topics")
+
+    # Require at least one compliance-domain keyword.
+    if not _COMPLIANCE_RE.search(norm):
+        return InputVerdict(InputDecision.REJECT, norm,
+                            "out-of-scope: question contains no recognized security/compliance terminology")
 
     return InputVerdict(InputDecision.ACCEPT, norm)
 
