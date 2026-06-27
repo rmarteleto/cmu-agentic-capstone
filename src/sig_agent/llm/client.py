@@ -10,7 +10,7 @@ import json
 from functools import lru_cache
 from typing import Any
 
-from tenacity import retry, stop_after_attempt, wait_exponential
+from tenacity import retry, stop_after_attempt, wait_exponential, wait_random_exponential
 
 from ..config import settings
 
@@ -45,7 +45,7 @@ def get_embeddings():
     )
 
 
-@retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, max=10))
+@retry(stop=stop_after_attempt(4), wait=wait_random_exponential(multiplier=1, min=1, max=20))
 def complete_json(system: str, user: str, temperature: float = 0.2) -> dict[str, Any]:
     """Prompt the model and parse a JSON object from the reply.
 

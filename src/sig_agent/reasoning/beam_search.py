@@ -62,8 +62,7 @@ class BeamSearchController:
     def run(self, question: str, passages: list[Passage],
             candidates: list[Candidate], state: SharedState) -> Optional[Branch]:
         B = settings.branch_factor
-        # Parallel workers = B (depth-1) or W*B (depth 2+), capped at max_workers.
-        workers = min(B * max(self.W, 1), settings.max_workers)
+        workers = settings.beam_max_workers
 
         # Depth 1 — fan out over the top-B passages in parallel.
         d1_passages = [p for p in passages[:B]
@@ -71,15 +70,19 @@ class BeamSearchController:
                        or state.log(f"prefilter pruned passage {p.passage_id}") or False]
 
         def _expand_d1(passage: Passage) -> Optional[Branch]:
-            node = self.generate(question, passage, None)
-            node.depth = 1
-            state.register_node(node)
-            score, scope = self.critique(question, node)
-            node.critic_score, node.scope_score = score, scope
-            if scope < self.min_score:
-                state.log(f"pruned node {node.node_id} scope={scope} < {self.min_score}")
+            try:
+                node = self.generate(question, passage, None)
+                node.depth = 1
+                state.register_node(node)
+                score, scope = self.critique(question, node)
+                node.critic_score, node.scope_score = score, scope
+                if scope < self.min_score:
+                    state.log(f"pruned node {node.node_id} scope={scope} < {self.min_score}")
+                    return None
+                return Branch(nodes=[node])
+            except Exception as exc:
+                state.log(f"d1 branch error (passage={passage.passage_id}): {exc}")
                 return None
-            return Branch(nodes=[node])
 
         with ThreadPoolExecutor(max_workers=workers) as ex:
             frontier = [b for b in ex.map(_expand_d1, d1_passages) if b is not None]
@@ -97,18 +100,22 @@ class BeamSearchController:
 
             def _expand_pair(args: tuple, _depth: int = depth) -> Optional[Branch]:
                 branch, passage = args
-                child = self.generate(question, passage, branch.leaf)
-                child.depth = _depth
-                child.parent_id = branch.leaf.node_id
-                state.register_node(child)
-                score, scope = self.critique(question, child)
-                child.critic_score, child.scope_score = score, scope
-                if scope < self.min_score:
-                    state.log(f"pruned node {child.node_id} at d{_depth}")
+                try:
+                    child = self.generate(question, passage, branch.leaf)
+                    child.depth = _depth
+                    child.parent_id = branch.leaf.node_id
+                    state.register_node(child)
+                    score, scope = self.critique(question, child)
+                    child.critic_score, child.scope_score = score, scope
+                    if scope < self.min_score:
+                        state.log(f"pruned node {child.node_id} at d{_depth}")
+                        return None
+                    new_branch = Branch(nodes=branch.nodes + [child])
+                    state.register_branch(new_branch)
+                    return new_branch
+                except Exception as exc:
+                    state.log(f"d{_depth} branch error (passage={passage.passage_id}): {exc}")
                     return None
-                new_branch = Branch(nodes=branch.nodes + [child])
-                state.register_branch(new_branch)
-                return new_branch
 
             with ThreadPoolExecutor(max_workers=workers) as ex:
                 expanded = [b for b in ex.map(_expand_pair, pairs) if b is not None]

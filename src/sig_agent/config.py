@@ -68,6 +68,11 @@ class Settings:
     keyword_weight: float = _float("KEYWORD_WEIGHT", 0.4)
     enable_reranker: bool = _bool("ENABLE_RERANKER", True)   # cross-encoder rerank
 
+    # Max concurrent LLM calls within a single beam-search depth expansion.
+    # Keep low to stay within OpenAI RPM limits. Separate from max_workers
+    # (which controls parallel questionnaire items at the orchestrator level).
+    beam_max_workers: int = _int("BEAM_MAX_WORKERS", 2)
+
     # Conflict-detection sensitivity for beam branch comparison.
     # Answers with SequenceMatcher ratio >= this value are treated as
     # complementary (same policy, different phrasing) rather than conflicting.
